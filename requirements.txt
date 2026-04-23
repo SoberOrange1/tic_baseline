@@ -1,0 +1,39 @@
+# ASDMotion — install from PyPI (works with mirrors like Tsinghua).
+# Python 3.9 recommended per README. For GPU PyTorch, use https://pytorch.org/get-started/locally/
+#
+#   pip install -r requirements.txt
+#   pip install -e .          # from repo root; required so `import asdmotion` works for the CLI
+
+# NumPy 2 pickles reference numpy._core; the separate open-mmlab / MMAction env
+# (often Py3.7 + NumPy 1.x) cannot load those. Keep NumPy 1.x here for *_dataset_*.pkl.
+numpy>=1.21,<2
+pandas>=1.3,<3
+# OpenCV 4.12+ (and 4.13) declare numpy>=2 on Python 3.9+, which conflicts with numpy<2 above.
+opencv-python>=4.5,<4.12
+ffmpeg-python==0.2.0
+omegaconf>=2.3,<3
+PyYAML>=6,<7
+tqdm>=4.64
+matplotlib>=3.5,<4
+scipy>=1.7,<2
+scikit-learn>=1.0,<2
+seaborn>=0.12,<1
+Pillow>=9,<11
+openpyxl>=3.0.9,<4
+protobuf>=3.20,<5
+psutil>=5.8,<6
+
+# PyTorch: ``pip install -r`` uses CPU wheels from PyPI by default.
+# On a GPU server (NVIDIA driver CUDA 12.x), install CUDA 12.1 *runtime* wheels after this file:
+#   pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Run that last so a plain ``pip install -r requirements.txt`` does not replace your CUDA build.
+torch>=1.13.0
+torchvision>=0.14.0
+torchaudio>=0.13.0
+
+# Optional: only if you use child_detection=true (YOLOv5 via torch.hub; needs network on first run).
+# ultralytics>=8.0.0
+
+# Optional: upstream helper packages (not imported by default pipeline). Uncomment if you need them.
+# -e git+https://github.com/TalBarami/Child-Detector.git@9d002b8447034a355f748fc180db2241e18ad94d#egg=Child_Detector
+# -e git+https://github.com/TalBarami/SkeletonTools.git@8e4caa61f99f4fb60634d8e9183d71dfbded91fd#egg=SkeletonTools
