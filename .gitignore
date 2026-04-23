@@ -161,3 +161,6 @@ cython_debug/
 
 # Previous long-form README kept locally only (not pushed)
 README.legacy.md
+
+# Local paths differ per machine; track ``config.example.yaml`` instead.
+resources/configs/config.yaml

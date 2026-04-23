@@ -1,8 +1,27 @@
 import time
 from argparse import ArgumentParser
 from os import path as osp
+from pathlib import Path
 
 from omegaconf import OmegaConf
+
+_VIDEO_SUFFIXES = frozenset(
+    {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg"}
+)
+
+
+def _collect_videos_under_root(root: str, *, recursive: bool) -> list[str]:
+    r = Path(root).expanduser().resolve()
+    if not r.is_dir():
+        raise FileNotFoundError(f"Not a directory: {r}")
+    it = r.rglob("*") if recursive else r.iterdir()
+    found = [str(p.resolve()) for p in it if p.is_file() and p.suffix.lower() in _VIDEO_SUFFIXES]
+    if not found:
+        raise ValueError(
+            f"No video files ({', '.join(sorted(_VIDEO_SUFFIXES))}) under {r} "
+            f"(recursive={recursive})."
+        )
+    return sorted(found)
 
 from asdmotion.detector.detector import Predictor
 from asdmotion.detector.preprocess import VideoTransformer
@@ -18,6 +37,12 @@ def predict_video(vt, vpath, p=None):
     vinf = vt.prepare_environment(vpath)
     if p is not None:
         p.annotate_video(vinf)
+    else:
+        logger.info(
+            'Skipping inference / CSV outputs (``*_predictions.pkl``, scores, annotations). '
+            'Dataset pickle and MMAction cfg are under %s',
+            vinf.get('dataset_path', '?'),
+        )
     t = time.time()
     delta = t - s
     logger.info(f'Total {int(delta // 3600):02d}:{int((delta % 3600) // 60):02d}:{delta % 60:05.2f} for {v}')
@@ -44,19 +69,80 @@ if __name__ == '__main__':
         default=None,
         help="Path to Holistic *_landmarks.json (pose stream). When set, OpenPose is skipped.",
     )
+    parser.add_argument(
+        "--skip-inference",
+        action="store_true",
+        help="Only run pose + sliding windows: write ``*_dataset_*.pkl`` and MMAction cfg under "
+        "``out_path``; do not run MMAction test or write predictions / score CSVs.",
+    )
+    parser.add_argument(
+        "--video-list",
+        type=str,
+        default=None,
+        help="Text file: one video path per line (# comments). Lower priority than ``--videos-root``.",
+    )
+    parser.add_argument(
+        "--videos-root",
+        type=str,
+        default=None,
+        help="Directory tree to scan for videos (common extensions). Recursive by default; "
+        "overrides cfg ``video_path`` and ``--video-list``.",
+    )
+    parser.add_argument(
+        "--videos-root-non-recursive",
+        action="store_true",
+        help="With ``--videos-root``, only scan immediate children (no subfolders).",
+    )
     args = parser.parse_args()
 
     args_dict = {k: v for k, v in vars(args).items() if k != "cfg"}
+    args_dict.pop("skip_inference", None)
+    videos_root = args_dict.pop("videos_root", None)
+    videos_root_non_recursive = args_dict.pop("videos_root_non_recursive", None)
+    video_list_path = args_dict.pop("video_list", None)
     if not args_dict.get("holistic_landmarks_json"):
         args_dict.pop("holistic_landmarks_json", None)
     cfg = OmegaConf.merge(load_config(args.cfg), OmegaConf.create(args_dict))
 
-    video_path = cfg.video_path
-    if not osp.exists(video_path):
-        raise FileNotFoundError(f'Video path {video_path} does not exist.')
     work_dir = cfg.out_path
 
-    logger.info(f'Executing ASDMotion on {video_path}. Results will be saved to {work_dir}')
+    if videos_root:
+        video_paths = _collect_videos_under_root(
+            videos_root,
+            recursive=not bool(videos_root_non_recursive),
+        )
+        logger.info("Collected %s video(s) under %s", len(video_paths), videos_root)
+    elif video_list_path:
+        if not osp.isfile(video_list_path):
+            raise FileNotFoundError(f"Video list not found: {video_list_path}")
+        video_paths = []
+        with open(video_list_path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                video_paths.append(s)
+        if not video_paths:
+            raise ValueError(f"No video paths in {video_list_path}")
+    else:
+        video_path = cfg.video_path
+        if not video_path:
+            raise ValueError(
+                "Set ``video_path`` in cfg, or pass ``--videos-root``, or ``--video-list``."
+            )
+        if not osp.exists(video_path):
+            raise FileNotFoundError(f"Video path {video_path} does not exist.")
+        video_paths = [video_path]
+
+    for vp in video_paths:
+        if not osp.exists(vp):
+            raise FileNotFoundError(f"Video path does not exist: {vp}")
+
+    logger.info(
+        "Dataset-only / full run on %s video(s); results under %s",
+        len(video_paths),
+        work_dir,
+    )
     holistic_json = getattr(cfg, "holistic_landmarks_json", None) or getattr(
         cfg, "holistic_json", None
     )
@@ -72,6 +158,19 @@ if __name__ == '__main__':
         cfg.num_person_out,
         holistic_landmarks_json=holistic_json,
     )
-    p = Predictor(work_dir, cfg.model_name, cfg.classification_threshold, ['NoAction', 'Stereotypical'], cfg.mmlab_python_path, cfg.mmaction_path, cfg.gpu)
-    logger.info(f'Annotating: {video_path}')
-    predict_video(vt=vt, p=p, vpath=video_path)
+    if args.skip_inference:
+        p = None
+        logger.info("skip-inference: not loading MMAction / not writing predictions.")
+    else:
+        p = Predictor(
+            work_dir,
+            cfg.model_name,
+            cfg.classification_threshold,
+            ["NoAction", "Stereotypical"],
+            cfg.mmlab_python_path,
+            cfg.mmaction_path,
+            cfg.gpu,
+        )
+    for video_path in video_paths:
+        logger.info("Processing: %s", video_path)
+        predict_video(vt=vt, p=p, vpath=video_path)
