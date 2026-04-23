@@ -2,6 +2,7 @@ import copy
 import os
 import shlex
 import subprocess
+import sys
 from os import path as osp
 from typing import Any, List
 
@@ -98,6 +99,17 @@ def _predictions_pkl_to_score_matrix(dumped: Any) -> np.ndarray:
     return np.stack(rows, axis=0).T
 
 
+def _dump_predictions_readable(path: str) -> bool:
+    """True if ``path`` exists, is non-empty, and ``read_pkl`` succeeds."""
+    try:
+        if not osp.isfile(path) or osp.getsize(path) <= 0:
+            return False
+        read_pkl(path)
+        return True
+    except Exception:
+        return False
+
+
 class Predictor:
     def __init__(self, work_dir, model_name, binary_threshold, labels, mmlab_python, mmaction_root, gpu_id=None):
         self.work_dir = work_dir
@@ -127,8 +139,19 @@ class Predictor:
                 elif _gid is not None and _gid < 0:
                     logger.info('MMAction2 subprocess: forcing CPU (CUDA_VISIBLE_DEVICES empty)')
                 logger.info('Executing MMAction2 test: %s', ' '.join(f'"{a}"' if ' ' in str(a) else str(a) for a in argv))
-                subprocess.check_call(argv, universal_newlines=True, env=env)
-            else:
+                try:
+                    subprocess.check_call(argv, universal_newlines=True, env=env)
+                except subprocess.CalledProcessError as e:
+                    # Some stacks SIGABRT during interpreter teardown after a successful ``--dump``
+                    # (e.g. ``free(): invalid pointer``) even though the pickle is complete.
+                    if _dump_predictions_readable(out_exec):
+                        logger.warning(
+                            'MMAction2 subprocess failed with %s but dump file is readable; continuing.',
+                            e,
+                        )
+                    else:
+                        raise
+            elif sys.platform == 'win32':
                 gpu_prefix = ''
                 if _gid is not None and _gid >= 0:
                     gpu_prefix = f'set CUDA_VISIBLE_DEVICES={_gid}&& '
@@ -140,7 +163,23 @@ class Predictor:
                 )
                 cmd = f'{osp.join(RESOURCES_ROOT, "run_in_env.bat")} {cmd}'.replace('\\', '/')
                 logger.info(f'Executing: {cmd}')
-                subprocess.check_call(cmd, universal_newlines=True, shell=True)
+                try:
+                    subprocess.check_call(cmd, universal_newlines=True, shell=True)
+                except subprocess.CalledProcessError as e:
+                    if _dump_predictions_readable(out_exec):
+                        logger.warning(
+                            'MMAction2 subprocess failed with %s but dump file is readable; continuing.',
+                            e,
+                        )
+                    else:
+                        raise
+            else:
+                raise FileNotFoundError(
+                    f'MMAction Python not found at mmlab_python_path={py!r} (file must exist). '
+                    'On Linux/macOS, set ``mmlab_python_path`` in config.yaml to the interpreter '
+                    'that has MMAction2 installed, e.g. ``/path/to/miniconda3/envs/mmlab/bin/python``. '
+                    'Do not rely on run_in_env.bat (Windows only).'
+                )
             logger.info('Prediction complete successfully.')
         else:
             logger.info(f'Prediction exists: {out_path}')

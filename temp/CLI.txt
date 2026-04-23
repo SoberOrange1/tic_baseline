@@ -1,1 +1,4 @@
 python -m asdmotion.detector.executor -cfg resources\configs\config.yaml -video A:\tic_holistic\DATA\videos\GN-002\GN_002_V2_20251105104429.mp4 -out A:\tic_holistic\baseline\results --holistic-json A:\tic_holistic\DATA\output\GN-002\GN_002_V2_20251105104429\GN-002_GN_002_V2_20251105104429_landmarks.json
+
+
+python -m asdmotion.detector.executor -cfg resources/configs/config.yaml -video /hdd/shujun/ls_project/videos_compressed/GN-002/GN_002_V2_20251105104429.mp4 -out /hdd/shujun/tic_holistic/tic_baseline/results --holistic-json /hdd/shujun/tic_holistic/DATA/output/GN-002/GN_002_V2_20251105104429/GN-002_GN_002_V2_20251105104429_landmarks.json
