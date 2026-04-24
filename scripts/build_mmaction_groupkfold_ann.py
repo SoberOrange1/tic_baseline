@@ -21,6 +21,14 @@ Writes under ``--out-dir``::
 Optional: ``--asdmotion-out-dir`` recursively collects every ``*_dataset_*.pkl`` under the executor
 ``-out`` / ``out_path`` tree (no ``--dataset-list`` needed).
 
+Optional: ``--write-fold-manifests`` writes ``foldNN/fold_manifest.json`` (+ ``.txt``) listing **video stems**
+in train vs val for each fold (same idea as ``tic_holistic/utils/post_analyze.py`` for the PyTorch pipeline).
+
+Optional: ``--holistic-cv-splits-json`` — use **exact val videos per fold** exported by
+``utils/post_analyze.py`` (``holistic_cv_splits_for_baseline.json`` next to ``training_config.json``).
+Skips sklearn ``GroupKFold`` so MMAction folds match holistic CV **when** ``frame_dir`` stems align with
+holistic ``video_folder`` strings (add optional ``val_video_stems`` per fold in JSON if names differ).
+
 Optional: ``--save-labeled-cache`` saves a pickle of merged labeled windows; ``--from-labeled-cache``
 replays only the GroupKFold split + file writes (no Excel / dataset I/O) when tuning ``--n-splits``
 or the config template.
@@ -36,6 +44,7 @@ Requires: ``pandas``, ``openpyxl``, ``scikit-learn``, ``numpy``.
 from __future__ import annotations
 
 import argparse
+import json
 import pickle
 import sys
 import warnings
@@ -112,6 +121,90 @@ def _collect_dataset_pkls(
             "and/or ``--dataset-root`` + ``--dataset-glob``."
         )
     return [Path(s) for s in uniq]
+
+
+def _write_fold_manifests(
+    fold_dir: Path,
+    fold_idx: int,
+    k_folds: int,
+    train_dirs: set,
+    val_dirs: set,
+) -> None:
+    """Human + machine-readable list of video stems (from ``frame_dir``) in train1 vs test1 split."""
+    train_stems = sorted({video_stem_from_frame_dir(str(fd)) for fd in train_dirs})
+    val_stems = sorted({video_stem_from_frame_dir(str(fd)) for fd in val_dirs})
+    payload = {
+        "fold": fold_idx,
+        "k_folds": k_folds,
+        "val_video_stems": val_stems,
+        "train_video_stems": train_stems,
+        "n_val_videos": len(val_stems),
+        "n_train_videos": len(train_stems),
+    }
+    jpath = fold_dir / "fold_manifest.json"
+    jpath.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    lines = [
+        f"fold={fold_idx:02d} / k_folds={k_folds}",
+        "",
+        f"# val videos ({len(val_stems)})",
+        *[f"  {s}" for s in val_stems],
+        "",
+        f"# train videos ({len(train_stems)})",
+        *[f"  {s}" for s in train_stems],
+        "",
+    ]
+    (fold_dir / "fold_manifest.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _dirs_for_holistic_val_keys(
+    all_ann: List[dict],
+    identifier: str,
+    val_keys: set,
+) -> Tuple[set, set]:
+    """
+    Partition ``frame_dir`` / ``filename`` ids into train vs val using holistic val name lists.
+
+    A window is **val** if ``video_stem_from_frame_dir(id) in val_keys`` or ``id in val_keys``.
+    """
+    train_dirs: set = set()
+    val_dirs: set = set()
+    for ann in all_ann:
+        fid = str(ann[identifier])
+        stem = video_stem_from_frame_dir(fid)
+        if stem in val_keys or fid in val_keys:
+            val_dirs.add(fid)
+        else:
+            train_dirs.add(fid)
+    return train_dirs, val_dirs
+
+
+def _load_holistic_cv_folds(path: Path) -> List[dict]:
+    raw = path.expanduser().resolve().read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or int(data.get("version", -1)) != 1:
+        raise SystemExit(f"Expected holistic CV JSON version 1: {path}")
+    folds = data.get("folds")
+    if not isinstance(folds, list) or not folds:
+        raise SystemExit(f"JSON has no 'folds' list: {path}")
+    for i, fd in enumerate(folds):
+        if not isinstance(fd, dict) or "fold" not in fd:
+            raise SystemExit(f"Invalid fold entry at index {i} in {path}")
+        has_v = bool(fd.get("val_video_folder")) or bool(fd.get("val_video_stems"))
+        if not has_v:
+            raise SystemExit(f"Fold {fd.get('fold')} needs val_video_folder and/or val_video_stems in {path}")
+    return sorted(folds, key=lambda x: int(x["fold"]))
+
+
+def _val_keys_for_fold(fold: dict) -> set:
+    keys: set = set()
+    for k in ("val_video_folder", "val_video_stems"):
+        v = fold.get(k)
+        if not v:
+            continue
+        if not isinstance(v, (list, tuple)):
+            raise SystemExit(f"Fold {fold.get('fold')}: {k} must be a list")
+        keys.update(str(x) for x in v)
+    return keys
 
 
 def _build_fold_bundle(
@@ -250,6 +343,18 @@ def main() -> int:
         default=None,
         help="Skip Excel and all ``--dataset-pkl`` reads; split from this cache only (fast re-K-fold).",
     )
+    ap.add_argument(
+        "--write-fold-manifests",
+        action="store_true",
+        help="Per fold, write ``fold_manifest.json`` and ``fold_manifest.txt`` (video stems in val vs train).",
+    )
+    ap.add_argument(
+        "--holistic-cv-splits-json",
+        type=Path,
+        default=None,
+        help="``holistic_cv_splits_for_baseline.json`` from ``tic_holistic/utils/post_analyze.py`` "
+        "(val videos per fold). Overrides sklearn GroupKFold; fold count comes from this file.",
+    )
     args = ap.parse_args()
 
     if args.from_labeled_cache is None:
@@ -346,38 +451,91 @@ def main() -> int:
     g_arr = np.asarray(groups, dtype=np.int64)
     n_groups = len(np.unique(g_arr))
 
-    from sklearn.model_selection import GroupKFold, KFold
-
-    k_req = max(2, int(args.n_splits))
-    if n < 2:
-        raise SystemExit(f"Need at least 2 windows for CV; found {n}.")
-
-    if n_groups < 2:
-        warnings.warn(
-            "Only one video group; using KFold on windows (not video-level GroupKFold). "
-            "Add more videos for leakage-free CV.",
-            UserWarning,
-            stacklevel=1,
-        )
-        k_eff = max(2, min(k_req, n))
-        if k_eff != k_req:
-            warnings.warn(f"Adjusted n_splits from {k_req} to {k_eff} (n_samples={n}).", UserWarning, stacklevel=1)
-        splitter = KFold(n_splits=k_eff, shuffle=True, random_state=int(args.seed))
-        splits = list(splitter.split(np.arange(n)))
-    else:
-        k_eff = max(2, min(k_req, n_groups))
-        if k_eff != k_req:
+    holistic_path = args.holistic_cv_splits_json
+    if holistic_path is not None:
+        hpath = holistic_path.expanduser().resolve()
+        if not hpath.is_file():
+            raise SystemExit(f"Not found: {hpath}")
+        holistic_folds = _load_holistic_cv_folds(hpath)
+        k_json = len(holistic_folds)
+        if int(args.n_splits) != k_json:
             warnings.warn(
-                f"Adjusted n_splits from {k_req} to {k_eff} (n_groups={n_groups}).",
+                f"--n-splits={args.n_splits} ignored when using holistic CV JSON ({k_json} folds from {hpath.name}).",
                 UserWarning,
                 stacklevel=1,
             )
-        gkf = GroupKFold(n_splits=k_eff)
-        splits = list(gkf.split(np.zeros(n), groups=g_arr))
+        split_dir_sets: List[Tuple[set, set]] = []
+        for fd in holistic_folds:
+            val_keys = _val_keys_for_fold(fd)
+            train_dirs, val_dirs = _dirs_for_holistic_val_keys(all_ann, identifier, val_keys)
+            if not val_dirs:
+                raise SystemExit(
+                    f"Holistic fold {fd.get('fold')}: no baseline windows matched val keys {sorted(val_keys)[:8]}… "
+                    f"Check that PoseDataset ``frame_dir`` stems match holistic ``video_folder`` "
+                    f"(or add ``val_video_stems`` in the JSON for this fold)."
+                )
+            if not train_dirs:
+                raise SystemExit(f"Holistic fold {fd.get('fold')}: train set is empty (check val keys).")
+            used_keys: set = set()
+            for ann in all_ann:
+                fid = str(ann[identifier])
+                stem = video_stem_from_frame_dir(fid)
+                if stem not in val_keys and fid not in val_keys:
+                    continue
+                if stem in val_keys:
+                    used_keys.add(stem)
+                if fid in val_keys:
+                    used_keys.add(fid)
+            unused_keys = val_keys - used_keys
+            if unused_keys:
+                warnings.warn(
+                    f"Holistic fold {fd.get('fold')}: val keys never matched any window: "
+                    f"{sorted(unused_keys)[:24]}",
+                    UserWarning,
+                    stacklevel=1,
+                )
+            split_dir_sets.append((train_dirs, val_dirs))
+        k_eff = k_json
+    else:
+        split_dir_sets = []
+        from sklearn.model_selection import GroupKFold, KFold
 
-    for fold_idx, (train_idx, val_idx) in enumerate(splits):
-        train_dirs = {all_ann[i][identifier] for i in train_idx}
-        val_dirs = {all_ann[i][identifier] for i in val_idx}
+        k_req = max(2, int(args.n_splits))
+        if n < 2:
+            raise SystemExit(f"Need at least 2 windows for CV; found {n}.")
+
+        if n_groups < 2:
+            warnings.warn(
+                "Only one video group; using KFold on windows (not video-level GroupKFold). "
+                "Add more videos for leakage-free CV.",
+                UserWarning,
+                stacklevel=1,
+            )
+            k_eff = max(2, min(k_req, n))
+            if k_eff != k_req:
+                warnings.warn(f"Adjusted n_splits from {k_req} to {k_eff} (n_samples={n}).", UserWarning, stacklevel=1)
+            splitter = KFold(n_splits=k_eff, shuffle=True, random_state=int(args.seed))
+            splits = list(splitter.split(np.arange(n)))
+        else:
+            k_eff = max(2, min(k_req, n_groups))
+            if k_eff != k_req:
+                warnings.warn(
+                    f"Adjusted n_splits from {k_req} to {k_eff} (n_groups={n_groups}).",
+                    UserWarning,
+                    stacklevel=1,
+                )
+            gkf = GroupKFold(n_splits=k_eff)
+            splits = list(gkf.split(np.zeros(n), groups=g_arr))
+
+    if holistic_path is None:
+        for fold_idx, (train_idx, val_idx) in enumerate(splits):
+            train_dirs = {all_ann[i][identifier] for i in train_idx}
+            val_dirs = {all_ann[i][identifier] for i in val_idx}
+            split_dir_sets.append((train_dirs, val_dirs))
+
+    for fold_idx, (train_dirs, val_dirs) in enumerate(split_dir_sets):
+        n_tr = sum(1 for a in all_ann if str(a[identifier]) in train_dirs)
+        n_va = sum(1 for a in all_ann if str(a[identifier]) in val_dirs)
         bundle = _build_fold_bundle(all_ann, train_dirs, val_dirs)
         fold_dir = out_root / f"fold{fold_idx:02d}"
         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -394,11 +552,14 @@ def main() -> int:
         )
         cfg_path.write_text(cfg_body, encoding="utf-8")
         print(
-            f"fold{fold_idx:02d}: windows train={len(train_idx)} val={len(val_idx)} "
+            f"fold{fold_idx:02d}: windows train={n_tr} val={n_va} "
             f"videos train={len(train_dirs)} val={len(val_dirs)} -> {ann_path}"
         )
+        if args.write_fold_manifests:
+            _write_fold_manifests(fold_dir, fold_idx, len(split_dir_sets), train_dirs, val_dirs)
+            print(f"  manifest -> {fold_dir / 'fold_manifest.json'}")
 
-    print(f"\nWrote {len(splits)} folds under {out_root}")
+    print(f"\nWrote {len(split_dir_sets)} folds under {out_root}")
     print("Train with: python tools/train.py <fold_dir>/binary_train_config.py")
     return 0
 
