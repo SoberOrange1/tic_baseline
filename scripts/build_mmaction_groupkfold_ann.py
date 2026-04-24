@@ -18,6 +18,9 @@ Writes under ``--out-dir``::
     fold00/binary_train_config.py
     fold01/...
 
+Optional: ``--asdmotion-out-dir`` recursively collects every ``*_dataset_*.pkl`` under the executor
+``-out`` / ``out_path`` tree (no ``--dataset-list`` needed).
+
 Optional: ``--save-labeled-cache`` saves a pickle of merged labeled windows; ``--from-labeled-cache``
 replays only the GroupKFold split + file writes (no Excel / dataset I/O) when tuning ``--n-splits``
 or the config template.
@@ -67,6 +70,7 @@ def _collect_dataset_pkls(
     list_file: Path | None,
     glob_pattern: str | None,
     root: Path | None,
+    asdmotion_out_dir: Path | None,
 ) -> List[Path]:
     out: List[Path] = []
     for p in paths:
@@ -90,9 +94,23 @@ def _collect_dataset_pkls(
         if not r.is_dir():
             raise SystemExit(f"--dataset-root is not a directory: {r}")
         out.extend(sorted(r.glob(glob_pattern)))
+    if asdmotion_out_dir is not None:
+        d = asdmotion_out_dir.expanduser().resolve()
+        if not d.is_dir():
+            raise SystemExit(f"--asdmotion-out-dir is not a directory: {d}")
+        found = sorted({p.resolve() for p in d.rglob("*_dataset_*.pkl") if p.is_file()})
+        if not found:
+            raise SystemExit(
+                f"No ``*_dataset_*.pkl`` under {d}. Run the executor with ``--skip-inference`` (or full run) "
+                "so each video has ``.../asdmotion/<model>/*_dataset_<L>.pkl`` under this tree."
+            )
+        out.extend(found)
     uniq = sorted({str(p) for p in out})
     if not uniq:
-        raise SystemExit("No dataset pickles: pass --dataset-pkl and/or --dataset-glob.")
+        raise SystemExit(
+            "No dataset pickles: pass ``--asdmotion-out-dir``, ``--dataset-pkl``, ``--dataset-list``, "
+            "and/or ``--dataset-root`` + ``--dataset-glob``."
+        )
     return [Path(s) for s in uniq]
 
 
@@ -177,6 +195,13 @@ def main() -> int:
         default=None,
         help="Text file: one ``*_dataset_*.pkl`` path per line; ``#`` starts a comment.",
     )
+    ap.add_argument(
+        "--asdmotion-out-dir",
+        type=Path,
+        default=None,
+        help="Executor ``-out`` / ``out_path`` root: recursively collect all ``*_dataset_*.pkl`` "
+        "(typical layout ``<out>/<video>/asdmotion/<model>/*.pkl``). Combines with other dataset sources.",
+    )
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-splits", type=int, default=5)
     ap.add_argument(
@@ -234,10 +259,11 @@ def main() -> int:
             bool(args.dataset_pkl)
             or args.dataset_list is not None
             or (bool(args.dataset_glob) and args.dataset_root is not None)
+            or args.asdmotion_out_dir is not None
         )
         if not has_ds:
             raise SystemExit(
-                "Provide dataset pickles: ``--dataset-pkl``, ``--dataset-list``, "
+                "Provide dataset pickles: ``--asdmotion-out-dir``, ``--dataset-pkl``, ``--dataset-list``, "
                 "and/or ``--dataset-root`` + ``--dataset-glob``."
             )
 
@@ -272,6 +298,7 @@ def main() -> int:
             args.dataset_list,
             args.dataset_glob,
             args.dataset_root,
+            args.asdmotion_out_dir,
         )
 
         all_ann = []
