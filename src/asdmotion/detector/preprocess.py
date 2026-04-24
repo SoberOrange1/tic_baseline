@@ -73,6 +73,14 @@ class VideoTransformer:
             child_dev = 'cpu' if _cuda_idx is None else f'cuda:{_cuda_idx}'
             self.child_detector = ChildDetector(device=child_dev)
 
+    def set_holistic_landmarks_json(self, holistic_landmarks_json):
+        """Point to a different Holistic JSON (e.g. per-video batch under ``--holistic-output-root``)."""
+        self.holistic_landmarks_json = None
+        if holistic_landmarks_json:
+            p = str(holistic_landmarks_json).strip()
+            if p:
+                self.holistic_landmarks_json = osp.abspath(p)
+
     def _create_skeleton(self, video_info):
         video_path = video_info['video_path']
         skeleton_path = video_info['skeleton_path']

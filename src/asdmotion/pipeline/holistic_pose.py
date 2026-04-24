@@ -14,6 +14,7 @@ import bisect
 import json
 import logging
 from os import path as osp
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -21,6 +22,39 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 POSE_NUM_JOINTS = 33
+
+
+def resolve_holistic_landmarks_json(holistic_output_root: str, video_path: str) -> str:
+    """
+    Find ``*_landmarks.json`` for ``video_path`` under a tic_holistic-style export tree, e.g.::
+
+        {root}/GN-002/GN_002_V1_20251103055634/GN-002_GN_002_V1_20251103055634_landmarks.json
+
+    Rule: parent directory of the JSON file must be named exactly ``Path(video_path).stem``
+    (anywhere under ``holistic_output_root``).
+    """
+    root = Path(holistic_output_root).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"holistic_output_root is not a directory: {root}")
+    stem = Path(video_path).stem
+    candidates = sorted(
+        p.resolve()
+        for p in root.rglob("*_landmarks.json")
+        if p.is_file() and p.parent.name == stem
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"No ``*_landmarks.json`` under {root!r} whose parent folder is named {stem!r} "
+            f"(expected …/{{group}}/{stem}/*_landmarks.json). Check Holistic export layout vs video basename."
+        )
+    if len(candidates) > 1:
+        logger.warning(
+            "Multiple Holistic JSONs for stem %r under %s; using %s",
+            stem,
+            root,
+            candidates[0],
+        )
+    return str(candidates[0])
 
 # COCO-17 order: nose, leye, reye, lear, rear, lsho, rsho, lelb, relb, lwri, rwri,
 # lhip, rhip, lkne, rkne, lank, rank  -> MediaPipe Pose landmark indices.

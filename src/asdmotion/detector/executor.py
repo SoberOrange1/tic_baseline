@@ -5,6 +5,14 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
+from asdmotion.detector.detector import Predictor
+from asdmotion.detector.preprocess import VideoTransformer
+from asdmotion.logger import LogManager
+from asdmotion.pipeline.holistic_pose import resolve_holistic_landmarks_json
+from asdmotion.utils import load_config
+
+logger = LogManager.APP_LOGGER
+
 _VIDEO_SUFFIXES = frozenset(
     {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg"}
 )
@@ -23,12 +31,6 @@ def _collect_videos_under_root(root: str, *, recursive: bool) -> list[str]:
         )
     return sorted(found)
 
-from asdmotion.detector.detector import Predictor
-from asdmotion.detector.preprocess import VideoTransformer
-from asdmotion.logger import LogManager
-from asdmotion.utils import load_config
-
-logger = LogManager.APP_LOGGER
 
 def predict_video(vt, vpath, p=None):
     v = osp.splitext(osp.basename(vpath))[0]
@@ -67,7 +69,14 @@ if __name__ == '__main__':
         dest="holistic_landmarks_json",
         type=str,
         default=None,
-        help="Path to Holistic *_landmarks.json (pose stream). When set, OpenPose is skipped.",
+        help="Single Holistic ``*_landmarks.json`` path (same for all videos in this run). OpenPose skipped.",
+    )
+    parser.add_argument(
+        "--holistic-output-root",
+        type=str,
+        default=None,
+        help="Holistic export root (tic_holistic ``DATA/output`` layout). For each video, picks the JSON "
+        "whose parent folder name equals the video basename (stem). Overrides ``--holistic-json`` when set.",
     )
     parser.add_argument(
         "--skip-inference",
@@ -85,8 +94,8 @@ if __name__ == '__main__':
         "--videos-root",
         type=str,
         default=None,
-        help="Directory tree to scan for videos (common extensions). Recursive by default; "
-        "overrides cfg ``video_path`` and ``--video-list``.",
+        help="Directory tree to scan for **video** files only (common extensions). Recursive by default; "
+        "overrides cfg ``video_path`` and ``--video-list``. Not related to Holistic JSON paths.",
     )
     parser.add_argument(
         "--videos-root-non-recursive",
@@ -100,6 +109,7 @@ if __name__ == '__main__':
     videos_root = args_dict.pop("videos_root", None)
     videos_root_non_recursive = args_dict.pop("videos_root_non_recursive", None)
     video_list_path = args_dict.pop("video_list", None)
+    holistic_output_root_cli = args_dict.pop("holistic_output_root", None)
     if not args_dict.get("holistic_landmarks_json"):
         args_dict.pop("holistic_landmarks_json", None)
     cfg = OmegaConf.merge(load_config(args.cfg), OmegaConf.create(args_dict))
@@ -146,6 +156,17 @@ if __name__ == '__main__':
     holistic_json = getattr(cfg, "holistic_landmarks_json", None) or getattr(
         cfg, "holistic_json", None
     )
+    holistic_output_root = holistic_output_root_cli or getattr(cfg, "holistic_output_root", None)
+    if holistic_output_root:
+        holistic_output_root = str(Path(holistic_output_root).expanduser().resolve())
+        logger.info(
+            "Per-video Holistic JSON under holistic_output_root=%r (parent dir name == video stem).",
+            holistic_output_root,
+        )
+        vt_init_holistic = None
+    else:
+        vt_init_holistic = holistic_json
+
     vt = VideoTransformer(
         work_dir,
         cfg.model_name,
@@ -156,7 +177,7 @@ if __name__ == '__main__':
         cfg.gpu,
         cfg.num_person_in,
         cfg.num_person_out,
-        holistic_landmarks_json=holistic_json,
+        holistic_landmarks_json=vt_init_holistic,
     )
     if args.skip_inference:
         p = None
@@ -173,4 +194,8 @@ if __name__ == '__main__':
         )
     for video_path in video_paths:
         logger.info("Processing: %s", video_path)
+        if holistic_output_root:
+            jp = resolve_holistic_landmarks_json(holistic_output_root, video_path)
+            vt.set_holistic_landmarks_json(jp)
+            logger.info("Holistic JSON (resolved): %s", jp)
         predict_video(vt=vt, p=p, vpath=video_path)

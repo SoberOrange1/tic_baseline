@@ -75,13 +75,45 @@ class OpenposeInitializer:
 
         cwd = os.getcwd()
         os.chdir(self.open_pose_path)
-        cmd = f'build_windows/x64/Release/OpenPoseDemo.exe {args}' if osp.exists('build_windows') else f'bin/OpenPoseDemo.exe {args}'
+        demo = self._openpose_demo_relpath()
+        cmd = f'{demo} {args}'
         logger.info(f'Executing: {cmd}')
         try:
             subprocess.check_call(shlex.split(cmd), universal_newlines=True)
         finally:
             os.chdir(cwd)
-            logger.info('OpenPose finished.')
+            logger.info('OpenPose subprocess returned (check logs above for success or failure).')
+
+    def _openpose_demo_relpath(self) -> str:
+        """
+        Path to the OpenPose CLI **relative to** ``open_pose_path`` (cwd is set there before ``exec``).
+
+        * Windows: ``build_windows/x64/Release/OpenPoseDemo.exe`` if ``build_windows`` exists, else
+          ``bin/OpenPoseDemo.exe``.
+        * Linux/macOS: typical CMake build ``build/examples/openpose/openpose.bin``, or
+          ``build/examples/openpose/OpenPoseDemo`` if present.
+        """
+        root = self.open_pose_path
+        if not osp.isdir(root):
+            raise FileNotFoundError(f"open_pose_path is not a directory: {root!r}")
+
+        if os.name == 'nt':
+            if osp.isdir(osp.join(root, 'build_windows')):
+                return 'build_windows/x64/Release/OpenPoseDemo.exe'
+            return 'bin/OpenPoseDemo.exe'
+
+        for rel in (
+            osp.join('build', 'examples', 'openpose', 'openpose.bin'),
+            osp.join('build', 'examples', 'openpose', 'OpenPoseDemo'),
+        ):
+            if osp.isfile(osp.join(root, rel)):
+                return rel.replace('\\', '/')
+
+        raise FileNotFoundError(
+            f"No OpenPose demo binary under {root!r}. On Linux, build from source and expect "
+            f"``{osp.join('build', 'examples', 'openpose', 'openpose.bin')}`` under that root, "
+            "or use Holistic JSON (``holistic_landmarks_json`` / ``--holistic-json``) to skip OpenPose."
+        )
 
     def prepare_skeleton(self, src_path, result_skeleton_dir=None, source_type=SkeletonSource.VIDEO, out_name=None):
         basename = osp.basename(src_path)
