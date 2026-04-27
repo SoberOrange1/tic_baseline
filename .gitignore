@@ -164,3 +164,6 @@ README.legacy.md
 
 # Local paths differ per machine; track ``config.example.yaml`` instead.
 resources/configs/config.yaml
+
+# Local scratch (notes, CLI snippets, etc.) — not for version control
+temp/
