@@ -9,7 +9,11 @@
 # Requires **scikit-learn** in the MMAction / open-mmlab environment.
 import sys
 
-custom_imports = ["mmaction.evaluation.metrics.holistic_tic_val_metric"]
+# mmengine 0.8.x: ``custom_imports`` must be a mapping (``imports=...``), not a bare list.
+custom_imports = dict(
+    imports=["mmaction.evaluation.metrics.holistic_tic_val_metric"],
+    allow_failed_imports=False,
+)
 
 default_scope = "mmaction"
 
