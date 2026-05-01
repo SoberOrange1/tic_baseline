@@ -12,6 +12,56 @@ Assume your current directory is:
 cd baseline
 ```
 
+## Environment Setup (Two Envs, Required)
+
+This project uses **two separate Python environments**. Keep them isolated to avoid
+NumPy / OpenMMLab dependency conflicts.
+
+### Env A: `asdmotion` (this repo)
+
+Use this env for:
+
+- `python -m asdmotion.detector.executor`
+- `scripts/build_mmaction_groupkfold_ann.py`
+- `scripts/evaluate_predictions.py`
+
+Create/install (example with conda):
+
+```bash
+conda create -n asdmotion python=3.9 -y
+conda activate asdmotion
+pip install -r requirements.txt
+pip install -e .
+```
+
+Important:
+
+- `requirements.txt` in this repo is for **Env A only**.
+- It intentionally keeps `numpy<2` for ASDMotion dataset pickle compatibility.
+
+### Env B: `open-mmlab` (MMAction2 training)
+
+Use this env only for MMAction2 training commands under `mmaction2/`:
+
+- `python tools/train.py ...`
+
+Create/install pattern:
+
+```bash
+conda create -n open-mmlab python=3.9 -y
+conda activate open-mmlab
+Clone and install MMAction2 by following the official repo instructions:
+https://github.com/TalBarami/mmaction2
+```
+
+Important:
+
+- Do **not** reuse `asdmotion` env for MMAction2 training.
+- Do **not** install this repo's `requirements.txt` into the MMAction2 env unless
+  you explicitly know why.
+- For MMAction2 dependencies (mmcv/mmengine/torch compatibility), always use the
+  guide in [TalBarami/mmaction2](https://github.com/TalBarami/mmaction2).
+
 ## Configuration (what to edit)
 
 There are two config layers in this baseline workflow:
@@ -68,6 +118,8 @@ Quick tip:
 
 ### Step 1: Run ASDMotion detector/inference
 
+Run in env: `asdmotion`
+
 ```bash
 python -m asdmotion.detector.executor \
   -cfg resources/configs/config.yaml \
@@ -81,6 +133,8 @@ This writes prediction outputs under:
 - `results/<video_stem>/asdmotion/asdmotion.pth/`
 
 ### Step 2: Evaluate predictions against Excel labels
+
+Run in env: `asdmotion`
 
 ```bash
 python scripts/evaluate_predictions.py \
@@ -103,6 +157,8 @@ The full training flow has 3 stages:
 
 ### Step 1: Build ASDMotion preprocessing outputs for all videos
 
+Run in env: `asdmotion`
+
 ```bash
 python -m asdmotion.detector.executor \
   -cfg resources/configs/config.yaml \
@@ -113,6 +169,8 @@ python -m asdmotion.detector.executor \
 ```
 
 ### Step 2: Build fold annotations and per-fold MMAction configs
+
+Run in env: `asdmotion`
 
 ```bash
 python scripts/build_mmaction_groupkfold_ann.py \
@@ -132,7 +190,9 @@ After this, each fold directory contains generated files such as:
 
 ### Step 3: Train each fold in MMAction2
 
-Activate your MMAction environment first (example):
+Run in env: `open-mmlab`
+
+Activate your MMAction environment first:
 
 ```bash
 conda activate open-mmlab
